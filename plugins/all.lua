@@ -1,156 +1,200 @@
-do
-data = load_data(_config.moderation.data)
-local function get_msgs_user_chat(user_id, chat_id)
-  local user_info = {}
-  local uhash = 'user:'..user_id
-  local user = redis:hgetall(uhash)
-  local um_hash = 'msgs:'..user_id..':'..chat_id
-  user_info.msgs = tonumber(redis:get(um_hash) or 0)
-  user_info.name = user_print_name(user)..' ['..user_id..']'
-  return user_info
-end
-local function chat_stats(chat_id)
-  local hash = 'chat:'..chat_id..':users'
-  local users = redis:smembers(hash)
-  local users_info = {}
-  for i = 1, #users do
-    local user_id = users[i]
-    local user_info = get_msgs_user_chat(user_id, chat_id)
-    table.insert(users_info, user_info)
-  end
-  table.sort(users_info, function(a, b) 
-      if a.msgs and b.msgs then
-        return a.msgs > b.msgs
-      end
-    end)
-  local text = 'Chat stats:\n'
-  for k,user in pairs(users_info) do
-    text = text..user.name..' = '..user.msgs..'\n'
-  end
-  return text
-end
+local included_fields = {
+    'settings',
+    'about',
+    'rules',
+    'mod',
+    'extra'
+}
 
-local function get_group_type(target)
-  local data = load_data(_config.moderation.data)
-  local group_type = data[tostring(target)]['group_type']
-    if not group_type or group_type == nil then
-       return 'No group type available.'
+local function doKeyboard_media(chat_id)
+    local keyboard = {}
+    keyboard.inline_keyboard = {}
+    local list = {'image', 'audio', 'video', 'sticker', 'gif', 'voice', 'contact', 'file'}
+    local media_sett = db:hgetall('chat:'..chat_id..':media')
+    for media,status in pairs(media_sett) do
+        if status == 'allowed' then
+            status = '✅'
+        else
+            status = '🔐 '..status
+        end
+        local line = {
+            {text = media, callback_data = 'menualert//'},
+            {text = status, callback_data = 'media'..media..'//'..chat_id}
+        }
+        table.insert(keyboard.inline_keyboard, line)
     end
-      return group_type
+    
+    return keyboard
 end
-local function show_group_settings(target)
-  local data = load_data(_config.moderation.data)
-  if data[tostring(target)] then
-    if data[tostring(target)]['settings']['flood_msg_max'] then
-      NUM_MSG_MAX = tonumber(data[tostring(target)]['settings']['flood_msg_max'])
-      print('custom'..NUM_MSG_MAX)
-    else 
-      NUM_MSG_MAX = 5
+
+local function doKeyboard_dashboard(chat_id)
+    local keyboard = {}
+    keyboard.inline_keyboard = {
+	    {
+            {text = "Settings", callback_data = 'dashboardsettings//'..chat_id},
+		},
+	    {
+		    {text = "Rules", callback_data = 'dashboardrules//'..chat_id},
+		    {text = "About", callback_data = 'dashboardabout//'..chat_id}
+        },
+	   	{
+	   	    {text = "Moderators", callback_data = 'dashboardmodlist//'..chat_id},
+	   	    {text = "Extra commands", callback_data = 'dashboardextra//'..chat_id}
+	    }
+    }
+    
+    return keyboard
+end
+
+local function doKeyboard_menu(chat_id)
+    local keyboard = {}
+    local settings = db:hgetall('chat:'..chat_id..':settings')
+    keyboard.inline_keyboard = {}
+    for key,val in pairs(settings) do
+        if val == 'yes' then val = '🔐' end
+        if val == 'no' then val = '🔓' end
+        local current = {
+            {text = key, callback_data = 'menualert//'},
+            {text = val, callback_data = 'menu'..key..'//'..chat_id}
+        }
+        table.insert(keyboard.inline_keyboard, current)
     end
-  end
-  local settings = data[tostring(target)]['settings']
-  local text = "Lock group name : "..settings.lock_name.."\nLock group photo : "..settings.lock_photo.."\nLock group member : "..settings.lock_member.."\nflood sensitivity : "..NUM_MSG_MAX
-  return text
+    local hash = 'chat:'..chat_id..':flood'
+    local action = db:hget(hash, 'ActionFlood')
+    local num = db:hget(hash, 'MaxFlood')
+    local flood = {
+        {text = '➖', callback_data = 'menuDimFlood//'..chat_id},
+        {text = '📍'..num..' ⚡️'..action, callback_data = 'menuActionFlood//'..chat_id},
+        {text = '➕', callback_data = 'menuRaiseFlood//'..chat_id},
+    }
+    table.insert(keyboard.inline_keyboard, flood)
+    
+    return keyboard
 end
 
-local function get_description(target)
-  local data = load_data(_config.moderation.data)
-  local data_cat = 'description'
-  if not data[tostring(target)][data_cat] then
-    return 'No description available.'
-  end
-  local about = data[tostring(target)][data_cat]
-  return about
-end
-
-local function get_rules(target)
-  local data = load_data(_config.moderation.data)
-  local data_cat = 'rules'
-  if not data[tostring(target)][data_cat] then
-    return 'No rules available.'
-  end
-  local rules = data[tostring(target)][data_cat]
-  return rules
-end
-
-
-local function modlist(target)
-  local data = load_data(_config.moderation.data)
-  local groups = 'groups'
-  if not data[tostring(groups)] or not data[tostring(groups)][tostring(target)] then
-    return 'Group is not added or is Realm.'
-  end
-  if next(data[tostring(target)]['moderators']) == nil then
-    return 'No moderator in this group.'
-  end
-  local i = 1
-  local message = '\nList of moderators :\n'
-  for k,v in pairs(data[tostring(target)]['moderators']) do
-    message = message ..i..' - @'..v..' [' ..k.. '] \n'
-    i = i + 1
-  end
-  return message
-end
-
-local function get_link(target)
-  local data = load_data(_config.moderation.data)
-  local group_link = data[tostring(target)]['settings']['set_link']
-  if not group_link or group_link == nil then 
-    return "No link"
-  end
-  return "Group link:\n"..group_link
-end
-
-local function all(target, receiver)
-  local text = "All the things I know about this group\n\n"
-  local group_type = get_group_type(target)
-  text = text.."Group Type: \n"..group_type
-  local settings = show_group_settings(target)
-  text = text.."\n\nGroup settings: \n"..settings
-  local rules = get_rules(target)
-  text = text.."\n\nRules: \n"..rules
-  local description = get_description(target)
-  text = text.."\n\nAbout: \n"..description
-  local modlist = modlist(target)
-  text = text.."\n\nMods: \n"..modlist
-  local link = get_link(target)
-  text = text.."\n\nLink: \n"..link
-  local stats = chat_stats(target)
-  text = text.."\n\n"..stats
-  local ban_list = ban_list(target)
-  text = text.."\n\n"..ban_list
-  local file = io.open("./groups/all/"..target.."all.txt", "w")
-  file:write(text)
-  file:flush()
-  file:close()
-  send_document(receiver,"./groups/all/"..target.."all.txt", ok_cb, false)
-  return
-end
-
-function run(msg, matches)
-  if matches[1] == "all" and matches[2] and is_owner2(msg.from.id, matches[2]) then
-    local receiver = get_receiver(msg)
-    local target = matches[2]
-    return all(target, receiver)
-  end
-  if not is_owner(msg) then
-    return
-  end
-  if matches[1] == "all" and not matches[2] then
-    local receiver = get_receiver(msg)
-    if not is_owner(msg) then
-      return
+local action = function(msg, blocks, ln)
+    print('Text', msg.text)
+    --get the interested chat id
+    local chat_id, msg_id
+    if msg.cb then
+        chat_id = msg.data:gsub('%a+//', '')
+        msg_id = msg.message_id
+    else
+        chat_id = msg.chat.id
     end
-    return all(msg.to.id, receiver)
-  end
+    
+    local keyboard = {}
+    
+    if blocks[1] == 'dashboard' then
+        if not(msg.chat.type == 'private') and not msg.cb then
+            keyboard = doKeyboard_dashboard(chat_id)
+            --everyone can use this
+            api.sendMessage(msg.chat.id, lang[ln].all.dashboard, true)
+	        api.sendKeyboard(msg.from.id, lang[ln].all.dashboard_first, keyboard, true)
+	        return
+        end
+        if msg.cb then
+            local text
+            keyboard = doKeyboard_dashboard(blocks[1], chat_id)
+            if blocks[2] == 'settings' then
+                text = cross.getSettings(chat_id, ln)
+            end
+            if blocks[2] == 'rules' then
+                text = cross.getRules(chat_id, ln)
+            end
+            if blocks[2] == 'about' then
+                text = cross.getAbout(chat_id, ln)
+            end
+            if blocks[2] == 'modlist' then
+                text = cross.getModlist(chat_id):mEscape()
+                text = make_text(lang[ln].bonus.mods_list, text)
+            end
+            if blocks[2] == 'extra' then
+                text = cross.getExtraList(chat_id, ln)
+            end
+            api.editMessageText(msg.chat.id, msg_id, text, keyboard, true)
+            return
+        end
+    end
+    if blocks[1] == 'menu' then
+        if not(msg.chat.type == 'private') and not msg.cb then
+            if not is_mod(msg) then return end --only mods can use this
+            keyboard = doKeyboard_menu(chat_id)
+            api.sendMessage(msg.chat.id, lang[ln].all.menu, true)
+	        api.sendKeyboard(msg.from.id, lang[ln].all.menu_first, keyboard, true)
+	        return
+	    end
+	    if msg.cb then
+	        if blocks[2] == 'alert' then
+                api.answerCallbackQuery(msg.cb_id, 'Tap on a lock!')
+                return
+            end
+            --keyboard = doKeyboard(blocks[1], chat_id)
+            if blocks[2] == 'DimFlood' or blocks[2] == 'RaiseFlood' or blocks[2] == 'ActionFlood' then
+                local action
+                if blocks[2] == 'DimFlood' then
+                    action = -1
+                elseif blocks[2] == 'RaiseFlood' then
+                    action = 1
+                elseif blocks[2] == 'ActionFlood' then
+                    action = (db:hget('chat:'..chat_id..':flood', 'ActionFlood')) or 'kick'
+                end
+                text = cross.changeFloodSettings(chat_id, action, ln)
+            else
+                text = cross.changeSettingStatus(chat_id, blocks[2], ln)
+            end
+            keyboard = doKeyboard_menu(chat_id)
+            api.editMessageText(msg.chat.id, msg_id, text, keyboard, true)
+        end
+    end
+    if blocks[1] == 'media' then
+        if not(msg.chat.type == 'private') and not msg.cb then
+            if not is_mod(msg) then return end --only mods can use this
+            keyboard = doKeyboard_media(chat_id)
+            api.sendMessage(msg.chat.id, lang[ln].bonus.general_pm, true)
+	        api.sendKeyboard(msg.from.id, lang[ln].all.media_first, keyboard, true)
+	        return
+	    end
+	    if msg.cb then
+	        local media = blocks[2]
+	        local text = cross.changeMediaStatus(chat_id, media, 'next', ln)
+            keyboard = doKeyboard_media(chat_id)
+            api.editMessageText(msg.chat.id, msg_id, text, keyboard, true)
+        end
+    end
 end
-
 
 return {
-  patterns = {
-  "^[!/](all)$",
-  "^[!/](all) (%d+)$"
-  },
-  run = run
+	action = action,
+	triggers = {
+		'^/(dashboard)$',
+		'^/(menu)$',
+		'^/(media)$',
+		'^###cb:(dashboard)(settings)//',
+    	'^###cb:(dashboard)(rules)//',
+	    '^###cb:(dashboard)(about)//',
+	    '^###cb:(dashboard)(modlist)//',
+	    '^###cb:(dashboard)(extra)//',
+    	'^###cb:(menu)(alert)//',
+    	'^###cb:(menu)(Rules)//',
+    	'^###cb:(menu)(About)//',
+    	'^###cb:(menu)(Modlist)//',
+    	'^###cb:(menu)(Rtl)//',
+    	'^###cb:(menu)(Arab)//',
+    	'^###cb:(menu)(Report)//',
+    	'^###cb:(menu)(Welcome)//',
+    	'^###cb:(menu)(Extra)//',
+    	'^###cb:(menu)(Flood)//',
+    	'^###cb:(menu)(DimFlood)//',
+    	'^###cb:(menu)(RaiseFlood)//',
+    	'^###cb:(menu)(ActionFlood)//',
+    	'^###cb:(media)(image)//',
+    	'^###cb:(media)(audio)//',
+    	'^###cb:(media)(video)//',
+    	'^###cb:(media)(voice)//',
+    	'^###cb:(media)(sticker)//',
+    	'^###cb:(media)(contact)//',
+    	'^###cb:(media)(file)//',
+    	'^###cb:(media)(gif)//',
+	}
 }
-end

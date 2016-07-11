@@ -1,209 +1,600 @@
-local function set_bot_photo(msg, success, result)
-  local receiver = get_receiver(msg)
-  if success then
-    local file = 'data/photos/bot.jpg'
-    print('File downloaded to:', result)
-    os.rename(result, file)
-    print('File moved to:', file)
-    set_profile_photo(file, ok_cb, false)
-    send_large_msg(receiver, 'Photo changed!', ok_cb, false)
-    redis:del("bot:photo")
-  else
-    print('Error downloading: '..msg.id)
-    send_large_msg(receiver, 'Failed, please try again!', ok_cb, false)
-  end
-end
-local function parsed_url(link)
-  local parsed_link = URL.parse(link)
-  local parsed_path = URL.parse_path(parsed_link.path)
-  return parsed_path[2]
-end
-local function get_contact_list_callback (cb_extra, success, result)
-  local text = " "
-  for k,v in pairs(result) do
-    if v.print_name and v.id and v.phone then
-      text = text..string.gsub(v.print_name ,  "_" , " ").." ["..v.id.."] = "..v.phone.."\n"
-    end
-  end
-  local file = io.open("contact_list.txt", "w")
-  file:write(text)
-  file:flush()
-  file:close()
-  send_document("user#id"..cb_extra.target,"contact_list.txt", ok_cb, false)--.txt format
-  local file = io.open("contact_list.json", "w")
-  file:write(json:encode_pretty(result))
-  file:flush()
-  file:close()
-  send_document("user#id"..cb_extra.target,"contact_list.json", ok_cb, false)--json format
-end
-local function user_info_callback(cb_extra, success, result)
-  result.access_hash = nil
-  result.flags = nil
-  result.phone = nil
-  if result.username then
-    result.username = '@'..result.username
-  end
-  result.print_name = result.print_name:gsub("_","")
-  local text = serpent.block(result, {comment=false})
-  text = text:gsub("[{}]", "")
-  text = text:gsub('"', "")
-  text = text:gsub(",","")
-  if cb_extra.msg.to.type == "chat" then
-    send_large_msg("chat#id"..cb_extra.msg.to.id, text)
-  else
-    send_large_msg("user#id"..cb_extra.msg.to.id, text)
-  end
-end
-local function get_dialog_list_callback(cb_extra, success, result)
-  local text = ""
-  for k,v in pairs(result) do
-    if v.peer then
-      if v.peer.type == "chat" then
-        text = text.."group{"..v.peer.title.."}["..v.peer.id.."]("..v.peer.members_num..")"
-      else
-        if v.peer.print_name and v.peer.id then
-          text = text.."user{"..v.peer.print_name.."}["..v.peer.id.."]"
-        end
-        if v.peer.username then
-          text = text.."("..v.peer.username..")"
-        end
-        if v.peer.phone then
-          text = text.."'"..v.peer.phone.."'"
-        end
-      end
-    end
-    if v.message then
-      text = text..'\nlast msg >\nmsg id = '..v.message.id
-      if v.message.text then
-        text = text .. "\n text = "..v.message.text
-      end
-      if v.message.action then
-        text = text.."\n"..serpent.block(v.message.action, {comment=false})
-      end
-      if v.message.from then
-        if v.message.from.print_name then
-          text = text.."\n From > \n"..string.gsub(v.message.from.print_name, "_"," ").."["..v.message.from.id.."]"
-        end
-        if v.message.from.username then
-          text = text.."( "..v.message.from.username.." )"
-        end
-        if v.message.from.phone then
-          text = text.."' "..v.message.from.phone.." '"
-        end
-      end
-    end
-    text = text.."\n\n"
-  end
-  local file = io.open("dialog_list.txt", "w")
-  file:write(text)
-  file:flush()
-  file:close()
-  send_document("user#id"..cb_extra.target,"dialog_list.txt", ok_cb, false)--.txt format
-  local file = io.open("dialog_list.json", "w")
-  file:write(json:encode_pretty(result))
-  file:flush()
-  file:close()
-  send_document("user#id"..cb_extra.target,"dialog_list.json", ok_cb, false)--json format
-end
-local function run(msg,matches)
-    local data = load_data(_config.moderation.data)
-    local receiver = get_receiver(msg)
-    local group = msg.to.id
-    if not is_admin(msg) then
-    	return
-    end
-    if msg.media then
-      	if msg.media.type == 'photo' and redis:get("bot:photo") then
-      		if redis:get("bot:photo") == 'waiting' then
-        		load_photo(msg.id, set_bot_photo, msg)
-      		end
-      	end
-    end
-    if matches[1] == "setbotphoto" then
-    	redis:set("bot:photo", "waiting")
-    	return 'Please send me bot photo now'
-    end
-    if matches[1] == "markread" then
-    	if matches[2] == "on" then
-    		redis:set("bot:markread", "on")
-    		return "Mark read > on"
-    	end
-    	if matches[2] == "off" then
-    		redis:del("bot:markread")
-    		return "Mark read > off"
-    	end
-    	return
-    end
-    if matches[1] == "pm" then
-    	send_large_msg("user#id"..matches[2],matches[3])
-    	return "Msg sent"
-    end
-    if matches[1] == "block" then
-    	if is_admin2(matches[2]) then
-    		return "You can't block admins"
-    	end
-    	block_user("user#id"..matches[2],ok_cb,false)
-    	return "User blocked"
-    end
-    if matches[1] == "unblock" then
-    	unblock_user("user#id"..matches[2],ok_cb,false)
-    	return "User unblocked"
-    end
-    if matches[1] == "import" then--join by group link
-    	local hash = parsed_url(matches[2])
-    	import_chat_link(hash,ok_cb,false)
-    end
-    if matches[1] == "contactlist" then
-      get_contact_list(get_contact_list_callback, {target = msg.from.id})
-      return "I've sent contact list with both json and text format to your private"
-    end
-    if matches[1] == "addcontact" and matches[2] then    add_contact(matches[2],matches[3],matches[4],ok_cb,false)
-      return "Number "..matches[2].." add from contact list"
-    end
-    if matches[1] == "delcontact" then
-      del_contact("user#id"..matches[2],ok_cb,false)
-      return "User "..matches[2].." removed from contact list"
-    end
-    if matches[1] == "dialoglist" then
-      get_dialog_list(get_dialog_list_callback, {target = msg.from.id})
-      return "I've sent dialog list with both json and text format to your private"
-    end
-    if matches[1] == "whois" then
-      user_info("user#id"..matches[2],user_info_callback,{msg=msg})
-    end
-    if matches[1] == "sync_gbans" then
-    	if not is_sudo(msg) then-- Sudo only
-    		return
-    	end
-    	local url = "http://seedteam.org/Teleseed/Global_bans.json"
-    	local SEED_gbans = http.request(url)
-    	local jdat = json:decode(SEED_gbans)
-    	for k,v in pairs(jdat) do
-  		redis:hset('user:'..v, 'print_name', k)
-  		banall_user(v)
-      		print(k, v.." Globally banned")
-    	end
-    end
-    return
-end
-return {
-  patterns = {
-	"^[!/](pm) (%d+) (.*)$",
-	"^[!/](import) (.*)$",
-	"^[!/](unblock) (%d+)$",
-	"^[!/](block) (%d+)$",
-	"^[!/](markread) (on)$",
-	"^[!/](markread) (off)$",
-	"^[!/](setbotphoto)$",
-	"%[(photo)%]",
-	"^[!/](contactlist)$",
-	"^[!/](dialoglist)$",
-	"^[!/](delcontact) (%d+)$",
-        "^[!/](addcontact) (.*) (.*) (.*)$",
-	"^[!/](whois) (%d+)$",
-	"^/(sync_gbans)$"--sync your global bans with seed
-  },
-  run = run,
+local triggers = {
+	'^/(init)$',
+	'^/(stop)$',
+	'^/(backup)$',
+	'^/(bc) (.*)$',
+	'^/(bcg) (.*)$',
+	'^/(save)$',
+	'^/(commands)$',
+	'^/(stats)$',
+	'^/(lua)$',
+	'^/(lua) (.*)$',
+	'^/(run) (.*)$',
+	'^/(log) (del) (.*)',
+	'^/(log) (del)',
+	'^/(log) (.*)$',
+	'^/(log)$',
+	'^/(admin)$',
+	'^/(block) (%d+)$',
+	'^/(block)$',
+	'^/(unblock) (%d+)$',
+	'^/(unblock)$',
+	'^/(isblocked)$',
+	'^/(ping redis)$',
+	'^/(leave) (-%d+)$',
+	'^/(leave)$',
+	'^/(post) (.*)$',
+	'^###(forward)',
+	'^/(reset) (.*)$',
+	'^/(reset)$',
+	'^/(send) (%d+) (.*)$',
+	'^/(send) (.*)$',
+	'^/(adminmode) (%a%a%a?)$',
+	'^/(delflag)$',
+	'^/(usernames)$',
+	'^/(api errors)$',
+	'^/(rediscli) (.*)$',
+	'^/(update)$',
+	'^/(movechat) (-%d+)$',
+	'^/(redis backup)$',
+	'^/(group info) (-?%d+)$',
+	'^/(echo) (.*)$',
+	'^/(fill media)$'
 }
---By @imandaneshi :)
---https://github.com/SEEDTEAM/TeleSeed/blob/master/plugins/admin.lua
+
+local logtxt = ''
+local failed = 0
+
+local function save_in_redis(hash, text)
+    local redis_res = db:set(hash, text)
+    if redis_res == true then
+	    return 'Saved on redis (res: true)'
+	else
+	    failed = failed + 1
+	    return 'Something went wrong with redis, res -> '..res
+	end
+end
+
+local function bot_leave(chat_id, ln)
+	local res = api.kickChatMember(chat_id, bot.id)
+	if not res then
+		return lang[ln].admin.leave_error
+	else
+		db:hincrby('bot:general', 'groups', -1)
+		return lang[ln].admin.leave_chat_leaved
+	end
+end
+
+local function load_lua(code)
+	local output = loadstring(code)()
+	if not output then
+		output = 'Done! (no output)'
+	else
+		if type(output) == 'table' then
+			output = vtext(output)
+		end
+		output = '```\n' .. output .. '\n```'
+	end
+	return output
+end
+
+local function fill_media_settings()
+	local list = {'image', 'audio', 'video', 'sticker', 'gif', 'voice', 'contact', 'file'}
+	local m_found = 0
+	local m_not_found = 0
+	local groups = db:smembers('bot:groupsid')
+	local logtxt = ''
+	for k,v in pairs(groups) do
+		local chat_id = v
+		logtxt = logtxt..'\nChat id: '..chat_id..'\n'
+    	local media_sett = db:hgetall('chat:'..chat_id..':media')
+    	for i=1,#list do
+    		logtxt = logtxt..'Checking '..list[i]..'... '
+        	if next(media_sett) then
+            	local bool = false
+            	for media,status in pairs(media_sett) do
+                	if media == list[i] then
+                		logtxt = logtxt..'found!\n'
+                		m_found = m_found + 1
+                		bool = true
+                	end
+            	end
+            	if bool == false then
+            		logtxt = logtxt..'not found!\n'
+            		m_not_found = m_not_found + 1
+                	db:hset('chat:'..chat_id..':media', list[i], 'allowed')
+            	end
+        	else
+        		logtxt = logtxt..'not found!\n'
+            	m_not_found = m_not_found + 1
+            	db:hset('chat:'..chat_id..':media', list[i], 'allowed')
+        	end
+        end
+    end
+    logtxt = 'MISSING MEDIA SETTINGS\nFound (ignored): '..m_found..'\nNot found (setted): '..m_not_found..'\n'..logtxt
+    print(logtxt)
+    local path = "./logs/fill_media_settings.txt"
+    write_file(path, logtxt)
+    api.sendDocument(config.admin, path)
+end
+
+local action = function(msg, blocks, ln)
+	
+	if msg.from.id ~= config.admin then
+		return
+	end
+	
+	if blocks[1] == 'admin' then
+		local text = ''
+		for k,v in pairs(triggers) do
+			text = text..v..'\n'
+		end
+		api.sendMessage(config.admin, text)
+		mystat('/admin')
+	end
+	if blocks[1] == 'init' then
+		--db:bgsave()
+		bot_init(true)
+		
+		local out = make_text(lang[ln].control.reload)
+		api.sendReply(msg, out, true)
+		mystat('/reload')
+	end
+	if blocks[1] == 'stop' then
+		db:bgsave()
+		is_started = false
+		local out = make_text(lang[ln].control.stop)
+		api.sendReply(msg, out, true)
+		mystat('/stop')
+	end
+	if blocks[1] == 'backup' then
+		local cmd = io.popen('sudo tar -cpf '..bot.first_name:gsub(' ', '_')..'.tar *')
+    	cmd:read('*all')
+    	cmd:close()
+    	api.sendDocument(msg.from.id, './'..bot.first_name:gsub(' ', '_')..'.tar')
+    	mystat('/backup')
+    end
+    if blocks[1] == 'bc' then
+	        if breaks_markdown(blocks[2]) then
+	            api.sendMessage(config.admin, lang[ln].breaks_markdown)
+	            return
+	        end
+	        local hash = 'bot:users'
+	        local ids = db:hkeys(hash)
+	        if ids then
+	            for i=1,#ids do
+	                api.sendMessage(ids[i], blocks[2], true)
+	                print('Sent', ids[i])
+	            end
+	            api.sendMessage(config.admin, lang[ln].broadcast.delivered)
+	        else
+	            api.sendMessage(config.admin, lang[ln].broadcast.no_user)
+	        end
+	        mystat('/bc')
+	    end
+	if blocks[1] == 'bcg' then
+		if breaks_markdown(blocks[2]) then
+	    	api.sendMessage(config.admin, lang[ln].breaks_markdown)
+	        return
+	    end
+	    local groups = db:smembers('bot:groupsid')
+	    if not groups then
+	    	api.sendMessage(config.admin, lang[ln].admin.bcg_no_groups)
+	    else
+	    	for i=1,#groups do
+	    		api.sendMessage(groups[i], blocks[2], true)
+	        	print('Sent', groups[i])
+	    	end
+	    	api.sendMessage(config.admin, lang[ln].broadcast.delivered)
+	    end
+	    mystat('/bcg')
+	end
+	if blocks[1] == 'save' then
+		db:bgsave()
+		local out = make_text(lang[ln].getstats.redis)
+		api.sendMessage(msg.chat.id, out, true)
+		mystat('/save')
+	end
+	if blocks[1] == 'commands' then
+		local text = 'Stats:\n'
+	    local hash = 'commands:stats'
+	    local names = db:hkeys(hash)
+	    local num = db:hvals(hash)
+	    for i=1, #names do
+	        text = text..'- *'..names[i]..'*: '..num[i]..'\n'
+	    end
+	    local out = make_text(lang[ln].getstats.stats, text)
+		api.sendMessage(msg.chat.id, out, true)
+		mystat('/commands')
+    end
+    if blocks[1] == 'stats' then
+    	local text = '#stats:\n'
+        local hash = 'bot:general'
+	    local names = db:hkeys(hash)
+	    local num = db:hvals(hash)
+	    for i=1, #names do
+	        text = text..'- *'..names[i]..'*: '..num[i]..'\n'
+	    end
+	    text = text..'- *messages from last start*: '..tot
+		api.sendMessage(msg.chat.id, text, true)
+		mystat('/stats')
+	end
+	if blocks[1] == 'lua' then
+		if not blocks[2] then
+			api.sendReply(msg, make_text(lang[ln].luarun.enter_string))
+			return
+		end
+		--execute
+		local output = load_lua(blocks[2])
+		api.sendMessage(msg.chat.id, output, true)
+		mystat('/lua')
+	end
+	if blocks[1] == 'run' then
+		--read the output
+		local output = io.popen(blocks[2]):read('*all')
+		--check if the output has a text
+		if output:len() == 0 then
+			output = make_text(lang[ln].shell.done)
+		else
+			output = make_text(lang[ln].shell.output, output)
+		end
+		api.sendMessage(msg.chat.id, output, true, msg.message_id, true)
+		mystat('/run')
+	end
+    if blocks[1] == 'log' then
+    	if blocks[2] then
+    		if blocks[2] ~= 'del' then
+    			local reply = 'I\' sent it in private'
+    			if blocks[2] == 'msg' then
+    				api.sendDocument(msg.from.id, './logs/msgs_errors.txt')
+    			elseif blocks[2] == 'dbswitch' then
+    				api.sendDocument(msg.from.id, './logs/dbswitch.txt')
+    			elseif blocks[2] == 'errors' then
+    				api.sendDocument(msg.from.id, './logs/errors.txt')
+    			elseif blocks[2] == 'starts' then
+    				api.sendDocument(msg.from.id, './logs/starts.txt')
+    			elseif blocks[2] == 'additions' then
+    				api.sendDocument(msg.from.id, './logs/additions.txt')
+    			elseif blocks[2] == 'usernames' then
+    				api.sendDocument(msg.from.id, './logs/usernames.txt')
+    			else
+    				reply = 'Invalid parameter: '..blocks[2]
+    			end
+    			if msg.chat.type ~= 'private' then
+    				api.sendReply(msg, reply)
+    			else
+    				if string.match(reply, '^Invalid parameter: .*') then
+    					api.sendMessage(msg.chat.id, reply)
+    				end
+				end
+			else
+				if blocks[3] then
+					local reply = 'Log deleted'
+					local cmd
+    				if blocks[3] == 'msg' then
+    					cmd = io.popen('sudo rm -rf logs/msgs_errors.txt')
+    				elseif blocks[3] == 'dbswitch' then
+    					cmd = io.popen('sudo rm -rf logs/dbswitch.txt')
+    				elseif blocks[3] == 'errors' then
+    					cmd = io.popen('sudo rm -rf logs/errors.txt')
+    				elseif blocks[3] == 'starts' then
+    					cmd = io.popen('sudo rm -rf logs/starts.txt')
+    				elseif blocks[3] == 'starts' then
+    					cmd = io.popen('sudo rm -rf logs/additions.txt')
+    				elseif blocks[3] == 'usernames' then
+    					cmd = io.popen('sudo rm -rf logs/usernames.txt')
+    				else
+    					reply = 'Invalid parameter: '..blocks[3]
+    				end
+    				if msg.chat.type ~= 'private' then
+    					if not string.match(reply, '^Invalid parameter: .*') then
+    						cmd:read('*all')
+        					cmd:close()
+        					api.sendReply(msg, reply)
+    					else
+    						api.sendReply(msg, reply)
+    					end
+    				else
+    					if string.match(reply, '^Invalid parameter: .*') then
+    						api.sendMessage(msg.chat.id, reply)
+    					else
+    						cmd:read('*all')
+        					cmd:close()
+        					api.sendMessage(msg.chat.id, reply)
+        				end
+					end
+				else
+					local cmd = io.popen('sudo rm -rf logs')
+        			cmd:read('*all')
+        			cmd:close()
+					if msg.chat.type == 'private' then
+						api.sendMessage(msg.chat.id, 'Logs folder deleted', true)
+					else
+						api.sendReply(msg, 'Logs folder deleted', true)
+					end
+				end
+			end
+		else
+			local reply = '*Available logs*:\n\n`msg`: errors during the delivery of messages\n`errors`: errors during the execution\n`starts`: when the bot have been started\n`usernames`: all the usernames seen by the bot\n`additions`: when the bot have been added to a group\n\nUsage:\n`/log [argument]`\n`/log del [argument]`\n`/log del` (whole folder)'
+			if msg.chat.type == 'private' then
+				api.sendMessage(msg.chat.id, reply, true)
+			else
+				api.sendReply(msg, reply, true)
+			end
+		end
+		mystat('/log')
+    end
+	if blocks[1] == 'block' then
+		local id
+		if not blocks[2] then
+			if not msg.reply then
+				api.sendReply(msg, lang[ln].admin.no_reply)
+				return
+			else
+				id = msg.reply.from.id
+			end
+		else
+			id = blocks[2]
+		end
+		local response = db:sadd('bot:blocked', id)
+		local text
+		if response == 1 then
+			text = make_text(lang[ln].admin.blocked, id)
+		else
+			text = make_text(lang[ln].admin.already_blocked, id)
+		end
+		api.sendReply(msg, text)
+		mystat('/block')
+	end
+	if blocks[1] == 'unblock' then
+		local id
+		local response
+		if not blocks[2] then
+			if not msg.reply then
+				api.sendReply(msg, lang[ln].admin.no_reply)
+				return
+			else
+				id = msg.reply.from.id
+			end
+		else
+			id = blocks[2]
+		end
+		local response = db:srem('bot:blocked', id)
+		local text
+		if response == 1 then
+			text = make_text(lang[ln].admin.unblocked, id)
+		else
+			text = make_text(lang[ln].admin.already_unblocked, id)
+		end
+		api.sendReply(msg, text)
+		mystat('/unblock')
+	end
+	if blocks[1] == 'isblocked' then
+		if not msg.reply then
+			api.sendReply(msg, lang[ln].admin.no_reply)
+			return
+		else
+			if is_blocked(msg.reply.from.id) then
+				api.sendReply(msg, 'yes')
+			else
+				api.sendReply(msg, 'no')
+			end
+		end
+		mystat('/isblocked')
+	end
+	if blocks[1] == 'ping redis' then
+		local ris = db:ping()
+		if ris == true then
+			api.sendMessage(msg.from.id, lang[ln].ping)
+		end
+		mystat('/ping redis')
+	end
+	if blocks[1] == 'leave' then
+		local text
+		if not blocks[2] then
+			if msg.chat.type == 'private' then
+				text = lang[ln].admin.leave_id_missing
+			else
+				text = bot_leave(msg.chat.id, ln) 
+			end
+		else
+			text = bot_leave(blocks[2], ln)
+		end
+		api.sendMessage(config.admin, text)
+		mystat('/leave')
+	end
+	if blocks[1] == 'post' then
+		if config.channel == '' then
+			api.sendMessage(config.admin, 'Enter your channel username in config.lua')
+		else
+			local res = api.sendMessage(config.channel, blocks[2], true)
+			local text
+			if res then
+				text = 'Message posted in '..config.channel
+			else
+				text = 'Delivery failed. Check the markdown used or the channel username setted'
+			end
+			api.sendMessage(config.admin, text)
+			mystat('/post')
+		end
+	end
+	if blocks[1] == 'forward' then
+		if msg.chat.type == 'private' then
+			if msg.forward_from then
+				api.sendReply(msg, msg.forward_from.id)
+			end
+		end
+		return msg.text:gsub('###forward:', '')
+	end
+	if blocks[1] == 'reset' then
+		if not blocks[2] then
+			api.sendMessage(config.admin, 'Missing key')
+			return
+		end
+		local key = blocks[2]
+		local hash = 'bot:general'
+		local res = db:hdel(hash, key)
+		if res == 1 then
+			api.sendMessage(config.admin, 'Resetted!')
+		else
+			api.sendMessage(config.admin, 'Field empty or invalid')
+		end
+	end
+	if blocks[1] == 'send' then
+		if not blocks[2] then
+			api.sendMessage(config.admin, 'Specify an id or reply with the message')
+			return
+		end
+		local id
+		if blocks[2]:match('(%d+)') then
+			if not blocks[3] then
+				api.sendMessage(config.admin, 'Text is missing')
+				return
+			end
+			id = blocks[2]
+		else
+			if not msg.reply then
+				api.sendMessage(config.admin, 'Reply to a user to send him a message')
+				return
+			end
+			id = msg.reply.from.id
+		end
+		local res = api.sendMessage(id, blocks[2])
+		if res then
+			api.sendMessage(config.admin, 'Successful delivery')
+		end
+	end
+	if blocks[1] == 'adminmode' then
+		if blocks[2]:match('^(on)$') and blocks[2]:match('^(off)$') then
+			api.sendMessage(config.admin, 'Available status: on/off')
+			return
+		end
+		local status = blocks[2]
+		local current = db:hget('bot:general', 'adminmode')
+		if current == status then
+			api.sendMessage(config.admin, 'Admin mode *already '..status..'*', true)
+		else
+			db:hset('bot:general', 'adminmode', status)
+			api.sendMessage(config.admin, 'Admin mode: *'..status..'*', true)
+		end
+	end
+	if blocks[1] == 'delflag' then
+		--with @admin command, flag is no longer needed
+		local groups = db:smembers('bot:groupsid')
+		local logtxt = ''
+		local deleted = 0
+		local not_deleted = 0
+		logtxt = logtxt..'Number of groups:\t'..#groups..'\n\n'
+		for i=1,#groups do
+			logtxt = logtxt..i..' - Group id:\t'..groups[i]..'\n'
+			local hash = 'chat:'..groups[i]..':settings'
+			local res = db:hdel(hash, 'Flag')
+			if res == 1 then
+				deleted = deleted + 1
+			elseif res == 0 then
+				not_deleted = not_deleted + 1
+			end
+			logtxt = logtxt..'Result for the group:\t'..res..'\n\n'
+		end
+		logtxt = logtxt..'\nDeleted:\t'..deleted..'\nNot deleted:\t'..not_deleted
+		print(logtxt)
+		local file = io.open("./logs/delflag.txt", "w")
+        file:write(logtxt)
+        file:close()
+        api.sendDocument(msg.from.id, './logs/delflag.txt')
+        api.sendMessage(msg.chat.id, 'Instruction processed. Check the log file I\'ve sent you')
+        mystat('/delflag')
+	end
+	if blocks[1] == 'usernames' then
+		local hash = 'bot:usernames'
+		local usernames = db:hkeys(hash)
+		local file = io.open("./logs/usernames.txt", "w")
+		file:write(vtext(usernames):gsub('"', ''))
+        file:close()
+        api.sendDocument(msg.from.id, './logs/usernames.txt')
+        api.sendMessage(msg.chat.id, 'Instruction processed. Total number of usernames: '..#usernames)
+        mystat('/usernames')
+    end
+    if blocks[1] == 'api errors' then
+    	local errors = db:hkeys('bot:errors')
+    	local times = db:hvals('bot:errors')
+    	local text = 'Api errors:\n'
+    	for i=1,#errors do
+    		text = text..errors[i]..': '..times[i]..'\n'
+    	end
+    	mystat('/apierrors')
+    	api.sendMessage(config.admin, text)
+    end
+    if blocks[1] == 'rediscli' then
+    	local redis_f = blocks[2]:gsub(' ', '(\'', 1)
+    	redis_f = redis_f:gsub(' ', '\',\'')
+    	redis_f = 'return db:'..redis_f..'\')'
+    	print(redis_f)
+    	local output = load_lua(redis_f)
+    	print(output)
+    	mystat('/rediscli')
+    	api.sendMessage(config.admin, output, true)
+    end
+    if blocks[1] == 'movechat' then
+    	if msg.chat.type == 'private' then
+    		api.sendMessage(msg.chat.id, 'This command must be launched from the group you want to move')
+    	else
+    		if tonumber(blocks[2]) == tonumber(msg.chat.id) then
+    			api.sendMessage(msg.chat.id, 'The id sent is the id of this chat!')
+    		else
+    			local new = blocks[2]
+    			local old = msg.chat.id
+    			migrate_chat_info(old, new, true)
+    		end
+    	end
+	end
+	if blocks[1] == 'redis backup' then
+		local groups = db:smembers('bot:groupsid')
+		vardump(groups)
+		div()
+		local all_groups = {}
+		for k,v in pairs(groups) do
+			local current = {}
+			current = group_table(v)
+			vardump(current)
+			div()
+			table.insert(all_groups, current)
+		end
+		div()
+		vardump(all_groups)
+		save_data("./logs/redisbackup.json", all_groups)
+		if not (msg.chat.type == 'private') then
+			api.sendMessage(msg.chat.id, 'I\'ve sent you the .json file in private')
+		end
+		api.sendDocument(config.admin, "./logs/redisbackup.json")
+	end
+	if blocks[1] == 'group info' then
+		local id = blocks[2]
+		if not (id:find('-')) then
+			id = '-'..id
+		end
+		local group_info_table = group_table(id)
+		local text = vtext(group_info_table)
+		local path = "./logs/group["..id.."].txt"
+		local res = write_file(path, text)
+		if not res then
+			api.sendMessage(msg.chat.id, 'Path invalid. Probably a folder is wrong/missing')
+			return
+		end
+		if not (msg.chat.type == 'private') then
+			api.sendMessage(msg.chat.id, 'I\'ve sent you the file in private')
+		end
+		api.sendDocument(config.admin, path)
+	end
+	if blocks[1] == 'echo' then
+		api.sendAdmin(blocks[2], true)
+	end
+	if blocks[1] == 'fill media' then
+		fill_media_settings()
+	end
+end
+
+return {
+	action = action,
+	triggers = triggers
+}
